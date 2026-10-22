@@ -1,0 +1,13 @@
+[package]
+name = "beagle-library-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# This is deliberately a separate Cargo package. Its executable must link the
+# native engine through the public library without Beagle's CLI feature.
+[dependencies]
+beagle = { path = "../..", default-features = false }
+serde_json = "1"
+
+[workspace]
