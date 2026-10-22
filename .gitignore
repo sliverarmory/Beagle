@@ -1,5 +1,5 @@
-# Track only Beagle's Rust source, Cargo files, tests, and license notices.
-# Data, compatibility tooling, vendored code, documentation, and outputs stay local.
+# Track Beagle's Rust project, CI build support, logo, and license notices.
+# Data, compatibility validation tooling, vendored code, and outputs stay local.
 /*
 !/.gitignore
 !/Cargo.toml
@@ -7,6 +7,24 @@
 !/build.rs
 !/LICENSE
 !/THIRD_PARTY_NOTICES.md
+!/README.md
+
+!/.github/
+/.github/*
+!/.github/workflows/
+/.github/workflows/*
+!/.github/workflows/build.yml
+!/.github/workflows/release.yml
+!/.github/actions/
+!/.github/build/
+!/.github/scripts/
+
+!/assets/
+/assets/*
+!/assets/beagle-logo.png
+
+# Keep planning notes local even if broader documentation is added later.
+ROADMAP.md
 
 !/licenses/
 /licenses/*

@@ -1,0 +1,86 @@
+{
+  "description": "MSYS2 MinGW64 POSIX regex dependencies used for the verified Windows x64 build; libraries link statically and are not distributed as DLLs. No binary packages are vendored.",
+  "target": "x86_64-pc-windows-gnu",
+  "packages": [
+    {
+      "name": "libsystre",
+      "version": "1.0.2-3",
+      "libraries": [
+        "systre"
+      ],
+      "license": "BSD-2-Clause",
+      "url": "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-libsystre-1.0.2-3-any.pkg.tar.zst",
+      "sha256": "ea20a54127fe2a606ef0f2bef62b1abef77710840b661b832a933b4020bfe316",
+      "source_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libsystre-1.0.2-3.src.tar.zst",
+      "source_sha256": "8c70a595f20ba799c226e298cbcb1ca347b1ab1537ce56dca4509e79caa8d90c",
+      "source_members": [
+        "mingw-w64-libsystre/PKGBUILD",
+        "mingw-w64-libsystre/regex.h",
+        "mingw-w64-libsystre/systre.c"
+      ],
+      "static_archive_sha256": {
+        "libsystre.a": "0ee5cc8ef79693a4cebcaf01b1893f4be08254b4f83884ae4e6e8493586f4cf2"
+      }
+    },
+    {
+      "name": "libtre",
+      "version": "0.9.0-2",
+      "libraries": [
+        "tre"
+      ],
+      "license": "BSD-2-Clause",
+      "url": "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-libtre-0.9.0-2-any.pkg.tar.zst",
+      "sha256": "c4051508d063258e1e02dd29615edb7d73c5c5f582ae42795fdd92e7ddce506b",
+      "source_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libtre-0.9.0-2.src.tar.zst",
+      "source_sha256": "57ee4f3b992e4ebe9b43fc8b5a0a66000ee40defc1089b727799330778344301",
+      "source_members": [
+        "mingw-w64-libtre/PKGBUILD",
+        "mingw-w64-libtre/001-autotools.patch",
+        "mingw-w64-libtre/002-pointer-cast.patch",
+        "mingw-w64-libtre/libtre/packed-refs",
+        "mingw-w64-libtre/libtre/objects/pack/pack-eb5642b0d91393c79fe02aed602c644b5058067c.pack"
+      ],
+      "static_archive_sha256": {
+        "libtre.a": "ee60ad31b656dfc5631f25f5c1b92b2aa424da6f4338947f60cdc5d6843e723e"
+      }
+    },
+    {
+      "name": "gettext-runtime",
+      "version": "1.0-1",
+      "libraries": [
+        "intl"
+      ],
+      "license": "LGPL-2.1-or-later",
+      "url": "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-gettext-runtime-1.0-1-any.pkg.tar.zst",
+      "sha256": "be68d7f260633284b910c588c6d82ee304a81c8817a686d2cd9df83f872c27af",
+      "source_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-gettext-1.0-1.src.tar.zst",
+      "source_sha256": "cca0d0c8f60353faccc5ad40405240014e4a7ccc8b1c6ca9f4626aef3097d26e",
+      "source_members": [
+        "mingw-w64-gettext/PKGBUILD",
+        "mingw-w64-gettext/gettext-1.0.tar.lz"
+      ],
+      "static_archive_sha256": {
+        "libintl.a": "a771727654b0465ccb01933954f6ba4b71eca1442dd3c18da14b1d3b20422698"
+      }
+    },
+    {
+      "name": "libiconv",
+      "version": "1.19-1",
+      "libraries": [
+        "iconv"
+      ],
+      "license": "LGPL-2.1-or-later",
+      "url": "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-libiconv-1.19-1-any.pkg.tar.zst",
+      "sha256": "21e334d0911f25de75d3e18e0697648bcecfa9658256d600cad0827d719c2f35",
+      "source_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst",
+      "source_sha256": "74428280c17094da5b702c29b2e1a0abae59556ea5dfdd65705cc8ccc1e000fb",
+      "source_members": [
+        "mingw-w64-libiconv/PKGBUILD",
+        "mingw-w64-libiconv/libiconv-1.19.tar.gz"
+      ],
+      "static_archive_sha256": {
+        "libiconv.a": "53bb47cdd782bf0bfcb680a631ca8d42ceb90f04fbca2c46ff175ec834693ac4"
+      }
+    }
+  ]
+}

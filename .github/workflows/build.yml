@@ -1,0 +1,73 @@
+name: Build check
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-gnu
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: ./.github/actions/setup-build
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check all features with Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Check library-only configuration with Clippy
+        run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
+
+      - name: Test all features
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Test library-only configuration
+        run: cargo test --locked --all-targets --no-default-features
+
+      - name: Run independent library consumer
+        run: |
+          consumer_dir="$(mktemp -d)"
+          cd "$consumer_dir"
+          cargo run --locked --manifest-path "$GITHUB_WORKSPACE/tests/library-consumer/Cargo.toml"

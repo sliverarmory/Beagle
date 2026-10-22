@@ -1,0 +1,94 @@
+name: Set up Beagle build
+description: Install native tools and restore the pinned public build inputs.
+
+inputs:
+  target:
+    description: Native Rust target triple for this runner.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      with:
+        toolchain: stable
+        targets: ${{ inputs.target }}
+        components: clippy,rustfmt
+
+    - name: Install Python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: '3.13'
+
+    - name: Install Linux build tools
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y build-essential bison flex
+
+    - name: Install macOS build tools
+      if: runner.os == 'macOS'
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: '1'
+      run: |
+        brew install bison flex
+        echo "BISON=$(brew --prefix bison)/bin/bison" >> "$GITHUB_ENV"
+        echo "FLEX=$(brew --prefix flex)/bin/flex" >> "$GITHUB_ENV"
+        echo 'MACOSX_DEPLOYMENT_TARGET=13.0' >> "$GITHUB_ENV"
+
+    - name: Install Windows build tools
+      if: runner.os == 'Windows'
+      id: msys2
+      uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+      with:
+        msystem: MINGW64
+        path-type: inherit
+        install: >-
+          make
+          bison
+          flex
+          tar
+          zstd
+          mingw-w64-x86_64-gcc
+
+    - name: Expose Windows native tools
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+      run: |
+        "$env:MSYS2_LOCATION/usr/bin" >> $env:GITHUB_PATH
+        "$env:MSYS2_LOCATION/mingw64/bin" >> $env:GITHUB_PATH
+
+    - name: Install pinned Python build tools
+      shell: bash
+      run: |
+        python -m pip install --disable-pip-version-check 'PyYAML==6.0.3' 'angreal==2.9.2'
+        python - <<'PY'
+        import os
+        import shutil
+        import sys
+        with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+            output.write(f'BEAGLE_PYTHON={sys.executable}\n')
+            output.write(f'BEAGLE_ANGREAL={shutil.which("angreal")}\n')
+        PY
+
+    - name: Restore verified public build inputs
+      shell: bash
+      run: python .github/scripts/prepare-build.py
+
+    - name: Restore verified Windows static libraries
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        python .github/build/prepare_windows_posix.py --output build/windows-posix
+        python - <<'PY'
+        import os
+        from pathlib import Path
+        prefix = Path('build/windows-posix/mingw64').resolve()
+        with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+            output.write(f'BEAGLE_WINDOWS_POSIX_ROOT={prefix}\n')
+        PY

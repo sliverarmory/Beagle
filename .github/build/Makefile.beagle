@@ -1,0 +1,23 @@
+# Beagle's static integration layer. The pinned upstream Makefile remains
+# unchanged and owns the source inventory and parser generation rules.
+include Makefile
+
+BEAGLE_SOURCES = $(SRC_DIR)/extension.c $(ALL_PARSER_SRCS) $(TRANSFORM_SRCS) $(EXECUTOR_SRCS) $(RUNTIME_SRCS)
+BEAGLE_OBJECTS = $(BEAGLE_SOURCES:%.c=build/beagle/%.o) $(PCRE2_SRCS:$(PCRE2_DIR)/%.c=build/beagle/pcre2/%.o)
+BEAGLE_FLAGS = -DSQLITE_CORE -I"$(BEAGLE_SQLITE_INCLUDE)" -I./src/include -I$(BUILD_PARSER_DIR) -I$(PCRE2_DIR)
+
+.PHONY: beagle-static
+beagle-static: build/libbeagle_graphqlite.a
+
+# These objects are deliberately separate from extension/test objects. SQLITE_CORE
+# makes every SQLite call bind directly to the same bundled SQLite as rusqlite.
+build/beagle/%.o: %.c $(GRAMMAR_HDR) $(SCANNER_HDR)
+	@mkdir -p "$(@D)"
+	$(BEAGLE_CC) $(BEAGLE_FLAGS) -c "$<" -o "$@"
+
+build/beagle/pcre2/%.o: $(PCRE2_DIR)/%.c $(PCRE2_HEADERS)
+	@mkdir -p "$(@D)"
+	$(BEAGLE_CC) -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H -DPCRE2_STATIC -I$(PCRE2_DIR) -c "$<" -o "$@"
+
+build/libbeagle_graphqlite.a: $(BEAGLE_OBJECTS)
+	$(BEAGLE_AR) crs "$@" $(BEAGLE_OBJECTS)

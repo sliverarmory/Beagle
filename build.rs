@@ -55,10 +55,10 @@ fn main() {
         "build.rs",
         "vendor/graphqlite-source.tar.gz",
         "vendor/graphqlite-source.json",
-        "tools/build_backend.py",
-        "tools/static_backend/task_beagle_static.py",
-        "tools/static_backend/Makefile.beagle",
-        "tools/static_backend/windows_compat.h",
+        ".github/build/builder.py",
+        ".github/build/task_beagle_static.py",
+        ".github/build/Makefile.beagle",
+        ".github/build/windows_compat.h",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
@@ -96,7 +96,7 @@ fn main() {
         // contain an unrelated SQLite installation.
         native.include(&sqlite_headers).include(&include);
         native.flag("-include").flag(
-            root.join("tools/static_backend/windows_compat.h")
+            root.join(".github/build/windows_compat.h")
                 .to_str()
                 .unwrap(),
         );
@@ -120,7 +120,7 @@ fn main() {
     let archive_command = std::iter::once(archiver.get_program()).chain(archiver.get_args());
     let mut command = Command::new(python_executable());
     command
-        .arg(root.join("tools/build_backend.py"))
+        .arg(root.join(".github/build/builder.py"))
         .arg("--static")
         .arg("--out-dir")
         .arg(&out)
