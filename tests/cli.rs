@@ -22,6 +22,24 @@ fn success(db: &Path, args: &[&str]) -> Value {
 }
 
 #[test]
+fn build_info_works_without_creating_a_database() {
+    let isolated = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_beagle"))
+        .arg("--build-info")
+        .current_dir(isolated.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let info: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(info["name"], "beagle");
+    assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(info["protocol"], 1);
+    assert_eq!(info["beagleRevision"], env!("BEAGLE_BUILD_REVISION"));
+    assert_eq!(info["target"], env!("BEAGLE_BUILD_TARGET"));
+    assert_eq!(fs::read_dir(isolated.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn copied_binary_runs_without_external_libraries_or_repository_assets() {
     let isolated = tempfile::tempdir().unwrap();
     let executable = isolated

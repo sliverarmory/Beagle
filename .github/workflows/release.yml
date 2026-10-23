@@ -37,6 +37,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: python .github/scripts/package-release.py validate-tag --tag "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - name: Test release archive and manifest verification
+        run: python .github/scripts/test-package-release.py
 
   build:
     name: Release binary (${{ matrix.target }})
@@ -62,6 +64,8 @@ jobs:
       CARGO_BUILD_TARGET: ${{ matrix.target }}
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RELEASE_TAG: ${{ github.ref_name }}
+      BEAGLE_SOURCE_REVISION: ${{ github.sha }}
+      BEAGLE_RELEASE_BUILD: '1'
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

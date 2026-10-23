@@ -4,11 +4,15 @@
 //! request validation and one database connection; it never evaluates shell text.
 
 use anyhow::{Result, bail};
-use beagle::{Beagle, ExportKind, IngestOptions, PathOptions, PathSelection, SystemTag};
+use beagle::{
+    AssetGroupConfiguration, Beagle, ExportKind, ImportMode, IngestOptions, PathOptions,
+    PathSelection, SnapshotImportOptions, SystemTag,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
-    io::{self, BufRead, Write},
+    fs::{self, File, OpenOptions},
+    io::{self, BufRead, Read, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -31,6 +35,16 @@ const OPERATIONS: &[&str] = &[
     "export",
     "paths",
     "shutdown",
+    "importSnapshot",
+    "exportToFile",
+    "backup",
+    "cleanup",
+    "getAssetGroups",
+    "previewAssetGroups",
+    "applyAssetGroups",
+    "relayTargets",
+    "closeDatabase",
+    "setImportHistoryRetention",
 ];
 
 #[derive(Deserialize)]
@@ -52,6 +66,10 @@ enum Command {
         database: String,
         query_timeout_ms: u64,
     },
+    CloseDatabase {},
+    SetImportHistoryRetention {
+        limit: usize,
+    },
     Stats {},
     Query {
         cypher: String,
@@ -71,8 +89,46 @@ enum Command {
     Ingest {
         paths: Vec<String>,
         analyze: bool,
+        #[serde(default)]
+        mode: ImportMode,
+        #[serde(default)]
+        history_limit: Option<usize>,
+        #[serde(default)]
+        compact_reports: bool,
     },
-    Analyze {},
+    Analyze {
+        #[serde(default)]
+        compact_reports: bool,
+    },
+    ImportSnapshot {
+        path: String,
+        analyze: bool,
+        #[serde(default)]
+        compact_reports: bool,
+    },
+    ExportToFile {
+        path: String,
+        #[serde(default)]
+        kind: ExportKind,
+    },
+    Backup {
+        path: String,
+    },
+    Cleanup {
+        kinds: Vec<String>,
+    },
+    GetAssetGroups {},
+    PreviewAssetGroups {
+        configuration: AssetGroupConfiguration,
+    },
+    ApplyAssetGroups {
+        configuration: AssetGroupConfiguration,
+    },
+    RelayTargets {
+        source: String,
+        target: String,
+        kind: String,
+    },
     Tag {
         objectid: String,
         tag: SystemTag,
@@ -311,6 +367,30 @@ fn valid_parameters(parameters: &Map<String, Value>) -> bool {
         && encode_message(parameters, 65_537).is_ok()
 }
 
+fn valid_configuration(configuration: &AssetGroupConfiguration) -> bool {
+    let mut labels = std::collections::BTreeSet::new();
+    configuration.groups.len() <= 32
+        && encode_message(configuration, 262_145).is_ok()
+        && configuration.groups.iter().all(|group| {
+            valid_text(&group.label, 128, false)
+                && group.label.starts_with("Tag_")
+                && group.label.len() > 4
+                && group
+                    .label
+                    .chars()
+                    .all(|value| value.is_ascii_alphanumeric() || value == '_')
+                && labels.insert(&group.label)
+                && group.priority <= 1_000_000
+                && group.seeds.len() <= 128
+                && group.exclusions.len() <= 1024
+                && group.exclusions.iter().all(|id| valid_text(id, 512, false))
+                && group.seeds.iter().all(|seed| match seed {
+                    beagle::asset_groups::Seed::Objectid(id) => valid_text(id, 512, false),
+                    beagle::asset_groups::Seed::Cypher(cypher) => valid_text(cypher, 65_536, true),
+                })
+        })
+}
+
 fn validate(command: &Command) -> bool {
     match command {
         Command::Open {
@@ -330,10 +410,22 @@ fn validate(command: &Command) -> bool {
         Command::Entity { objectid } | Command::Tag { objectid, .. } => {
             valid_text(objectid, 512, false)
         }
-        Command::Ingest { paths, .. } => {
-            (1..=100).contains(&paths.len()) && paths.iter().all(|path| valid_path(path))
+        Command::Ingest {
+            paths,
+            history_limit,
+            ..
+        } => {
+            (1..=100).contains(&paths.len())
+                && paths.iter().all(|path| valid_path(path))
+                && history_limit.is_none_or(|limit| [10, 25, 50, 100].contains(&limit))
         }
+        Command::SetImportHistoryRetention { limit } => [10, 25, 50, 100].contains(limit),
         Command::Compose {
+            source,
+            target,
+            kind,
+        }
+        | Command::RelayTargets {
             source,
             target,
             kind,
@@ -352,6 +444,24 @@ fn validate(command: &Command) -> bool {
                 && valid_text(target, 512, false)
                 && (1..=64).contains(max_hops)
         }
+        Command::ImportSnapshot { path, .. }
+        | Command::ExportToFile { path, .. }
+        | Command::Backup { path } => valid_path(path),
+        Command::Cleanup { kinds } => {
+            !kinds.is_empty()
+                && kinds.len() <= 4
+                && kinds.iter().all(|kind| {
+                    matches!(
+                        kind.as_str(),
+                        "HasSession"
+                            | "LocalToComputer"
+                            | "MemberOfLocalGroup"
+                            | "RemoteInteractiveLogonRight"
+                    )
+                })
+        }
+        Command::PreviewAssetGroups { configuration }
+        | Command::ApplyAssetGroups { configuration } => valid_configuration(configuration),
         _ => true,
     }
 }
@@ -374,6 +484,10 @@ fn execute(engine: &mut Option<Beagle>, command: Command) -> OperationResult {
             let mut opened = Beagle::open(database).map_err(|_| OPERATION_FAILED)?;
             opened.set_query_timeout(Duration::from_millis(query_timeout_ms));
             *engine = Some(opened);
+            Ok(Value::Null)
+        }
+        Command::CloseDatabase {} => {
+            drop(engine.take());
             Ok(Value::Null)
         }
         Command::Catalog {} => Beagle::query_catalog()
@@ -402,6 +516,9 @@ fn execute(engine: &mut Option<Beagle>, command: Command) -> OperationResult {
 fn execute_open(engine: &mut Beagle, command: Command) -> Result<Value> {
     Ok(match command {
         Command::Stats {} => engine.stats()?,
+        Command::SetImportHistoryRetention { limit } => {
+            engine.set_import_history_retention(limit)?
+        }
         Command::Query { cypher, parameters } => {
             engine.query(&cypher, &Value::Object(parameters))?
         }
@@ -409,14 +526,89 @@ fn execute_open(engine: &mut Beagle, command: Command) -> Result<Value> {
             engine.query_saved(&id, &Value::Object(parameters))?
         }
         Command::Entity { objectid } => engine.entity(&objectid)?,
-        Command::Ingest { paths, analyze } => serde_json::to_value(engine.ingest(
-            &paths.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
-            IngestOptions {
-                analyze,
-                ..Default::default()
-            },
-        )?)?,
-        Command::Analyze {} => serde_json::to_value(engine.analyze(None)?)?,
+        Command::Ingest {
+            paths,
+            analyze,
+            mode,
+            history_limit,
+            compact_reports,
+        } => {
+            let outcome = engine.ingest_with_history_retention(
+                &paths.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
+                IngestOptions { analyze, mode },
+                history_limit,
+            )?;
+            if compact_reports {
+                compact_ingest(outcome)?
+            } else {
+                serde_json::to_value(outcome)?
+            }
+        }
+        Command::Analyze { compact_reports } => {
+            let outcome = engine.analyze(None)?;
+            if compact_reports {
+                compact_analysis_outcome(outcome)?
+            } else {
+                serde_json::to_value(outcome)?
+            }
+        }
+        Command::ImportSnapshot {
+            path,
+            analyze,
+            compact_reports,
+        } => {
+            let metadata = fs::symlink_metadata(&path)?;
+            anyhow::ensure!(
+                metadata.is_file() && metadata.len() <= SNAPSHOT_BYTES,
+                "Snapshot exceeds file limits"
+            );
+            let snapshot = serde_json::from_reader(File::open(path)?.take(SNAPSHOT_BYTES + 1))?;
+            let outcome = engine.import_snapshot(snapshot, SnapshotImportOptions { analyze })?;
+            let mut value = serde_json::to_value(outcome)?;
+            if compact_reports {
+                compact_analysis_value(&mut value);
+            }
+            value
+        }
+        Command::ExportToFile { path, kind } => {
+            let snapshot = engine.export(kind)?;
+            let ((), bytes) = private_output(&path, |file| {
+                serde_json::to_writer(
+                    &mut LimitedFile {
+                        file,
+                        bytes: 0,
+                        limit: SNAPSHOT_BYTES,
+                    },
+                    &snapshot,
+                )?;
+                Ok(())
+            })?;
+            json!({"nodes":snapshot.nodes.len(),"edges":snapshot.edges.len(),"bytes":bytes})
+        }
+        Command::Backup { path } => {
+            let ((), bytes) = private_output(&path, |_file| engine.store().backup_to(&path))?;
+            json!({"bytes":bytes})
+        }
+        Command::Cleanup { kinds } => {
+            let mut value = engine.cleanup_relationships(&kinds)?;
+            compact_analysis_value(&mut value);
+            value
+        }
+        Command::GetAssetGroups {} => serde_json::to_value(engine.asset_group_configuration()?)?,
+        Command::PreviewAssetGroups { configuration } => {
+            compact_selection(engine.preview_asset_groups(&configuration)?)?
+        }
+        Command::ApplyAssetGroups { configuration } => {
+            compact_analysis_outcome(engine.apply_asset_groups_with_analysis(&configuration)?)?
+        }
+        Command::RelayTargets {
+            source,
+            target,
+            kind,
+        } => {
+            let nodes = engine.relay_targets(&source, &target, &kind)?;
+            json!({"columns":["target"],"rows":nodes.into_iter().map(|node| json!({"target":node})).collect::<Vec<_>>()})
+        }
         Command::Tag {
             objectid,
             tag,
@@ -446,10 +638,235 @@ fn execute_open(engine: &mut Beagle, command: Command) -> Result<Value> {
             },
         )?,
         Command::Open { .. }
+        | Command::CloseDatabase {}
         | Command::Catalog {}
         | Command::SavedQueryInfo { .. }
         | Command::Shutdown {} => unreachable!(),
     })
+}
+
+const SNAPSHOT_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// The host publishes this create-new staging file only after a verified reply.
+/// Killing the helper may leave a partial staging file; the host owns cleanup.
+fn private_output<T>(
+    path: &str,
+    operation: impl FnOnce(&mut File) -> Result<T>,
+) -> Result<(T, u64)> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    let result = (|| {
+        let value = operation(&mut file)?;
+        file.sync_all()?;
+        Ok((value, file.metadata()?.len()))
+    })();
+    drop(file);
+    if result.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    result
+}
+struct LimitedFile<'a> {
+    file: &'a mut File,
+    bytes: u64,
+    limit: u64,
+}
+impl Write for LimitedFile<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() as u64 > self.limit - self.bytes {
+            return Err(io::Error::other("Snapshot exceeds 1 GiB limit"));
+        }
+        let written = self.file.write(bytes)?;
+        self.bytes += written as u64;
+        Ok(written)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+fn bounded_text(value: &str, length: usize) -> String {
+    value.chars().take(length).collect()
+}
+
+fn compact_ingest(mut outcome: beagle::IngestOutcome) -> Result<Value> {
+    let report = &mut outcome.ingest;
+    let mut quality = Map::new();
+    for category in [
+        "Sessions",
+        "PrivilegedSessions",
+        "RegistrySessions",
+        "LocalGroups",
+    ] {
+        let (mut collected, mut failed, mut unknown, mut omitted) =
+            (0usize, 0usize, 0usize, 0usize);
+        let mut reasons = std::collections::BTreeMap::<String, usize>::new();
+        for record in &report.source_records {
+            if let Some(probe) = record.data.get(category) {
+                // LocalGroups records one independent probe per local group.
+                // Missing fields and empty arrays mean no reported probes (zero),
+                // while a present probe without Collected is explicitly unknown.
+                let values = if category == "LocalGroups" {
+                    probe
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or(std::slice::from_ref(probe))
+                } else {
+                    std::slice::from_ref(probe)
+                };
+                for value in values {
+                    let success = value.get("Collected").and_then(Value::as_bool);
+                    match success {
+                        Some(true) => collected += 1,
+                        Some(false) => failed += 1,
+                        None => unknown += 1,
+                    }
+                    if success == Some(false) {
+                        let reason = bounded_text(
+                            value
+                                .get("FailureReason")
+                                .and_then(Value::as_str)
+                                .filter(|reason| !reason.is_empty())
+                                .unwrap_or("Unspecified"),
+                            512,
+                        );
+                        if reasons.contains_key(&reason) || reasons.len() < 100 {
+                            *reasons.entry(reason).or_default() += 1;
+                        } else {
+                            omitted += 1;
+                        }
+                    }
+                }
+            }
+        }
+        quality.insert(category.into(), json!({"collected":collected,"failed":failed,"unknown":unknown,"failureReasons":reasons,"failureReasonsTruncated":omitted}));
+    }
+    let counts = json!({"sourceRecordsCount":report.source_records.len(),"retainedFieldsCount":report.retained_fields.len(),"propertyDeletionsCount":report.property_deletions.len(),"edgePropertyDeletionsCount":report.edge_property_deletions.len(),"warningsTruncated":report.warnings.len().saturating_sub(200),"filesTruncated":report.files.len().saturating_sub(1000),"collectionQuality":quality});
+    report.source_records.clear();
+    report.retained_fields.clear();
+    report.property_deletions.clear();
+    report.edge_property_deletions.clear();
+    report.warnings.truncate(200);
+    for warning in &mut report.warnings {
+        *warning = bounded_text(warning, 2048);
+    }
+    report.files.truncate(1000);
+    for file in &mut report.files {
+        file.path = bounded_text(&file.path, 4096);
+        file.metadata = Value::Object(
+            file.metadata
+                .as_object()
+                .into_iter()
+                .flatten()
+                .take(32)
+                .filter_map(|(key, value)| {
+                    if ![
+                        "type",
+                        "version",
+                        "count",
+                        "methods",
+                        "collectorversion",
+                        "timestamp",
+                    ]
+                    .contains(&key.as_str())
+                        || !matches!(
+                            value,
+                            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_)
+                        )
+                    {
+                        return None;
+                    }
+                    Some((
+                        key.clone(),
+                        match value {
+                            Value::String(value) => Value::String(bounded_text(value, 1024)),
+                            other => other.clone(),
+                        },
+                    ))
+                })
+                .collect(),
+        );
+    }
+    let mut value = serde_json::to_value(outcome)?;
+    let ingest = value["ingest"].as_object_mut().unwrap();
+    for field in [
+        "source_records",
+        "retained_fields",
+        "property_deletions",
+        "edge_property_deletions",
+    ] {
+        ingest.remove(field);
+    }
+    ingest.extend(counts.as_object().unwrap().clone());
+    compact_analysis_value(&mut value);
+    Ok(value)
+}
+fn compact_analysis_outcome(outcome: beagle::AnalysisOutcome) -> Result<Value> {
+    let mut value = serde_json::to_value(outcome)?;
+    compact_analysis_value(&mut value);
+    Ok(value)
+}
+fn compact_analysis_value(value: &mut Value) {
+    if let Some(analysis) = value.get_mut("analysis").and_then(Value::as_object_mut) {
+        let mut omitted = 0;
+        if let Some(ambiguities) = analysis
+            .get_mut("local_group_ambiguities")
+            .and_then(Value::as_array_mut)
+        {
+            let original = std::mem::take(ambiguities);
+            let mut bytes = 0;
+            for ambiguity in original {
+                if ambiguities.len() >= 100 {
+                    omitted += 1;
+                    continue;
+                }
+                match encode_message(&ambiguity, 65_536) {
+                    Ok(encoded) if bytes + encoded.len() <= 2 * 1024 * 1024 => {
+                        bytes += encoded.len();
+                        ambiguities.push(ambiguity);
+                    }
+                    _ => omitted += 1,
+                }
+            }
+        }
+        analysis.insert("diagnostics_truncated".into(), json!(omitted));
+    }
+    if let Some(selection) = value
+        .get_mut("asset_groups")
+        .filter(|value| !value.is_null())
+        && let Ok(report) = serde_json::from_value::<beagle::SelectionReport>(selection.clone())
+        && let Ok(compact) = compact_selection(report)
+    {
+        *selection = compact;
+    }
+}
+fn compact_selection(report: beagle::SelectionReport) -> Result<Value> {
+    let mut value = serde_json::to_value(report)?;
+    let mut counts = Map::new();
+    let mut truncated = false;
+    if let Some(selected) = value["selected"].as_object_mut() {
+        for (label, ids) in selected {
+            if let Some(ids) = ids.as_array_mut() {
+                counts.insert(label.clone(), json!(ids.len()));
+                truncated |= ids.len() > 100;
+                ids.truncate(100);
+            }
+        }
+    }
+    let missing_total = value["missing_objectids"].as_array().map_or(0, Vec::len);
+    if let Some(missing) = value["missing_objectids"].as_array_mut() {
+        missing.truncate(100);
+    }
+    value["counts"] = Value::Object(counts);
+    value["missing_total"] = json!(missing_total);
+    value["truncated"] = json!(truncated || missing_total > 100);
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -508,6 +925,52 @@ mod tests {
             json!({"__proto__": {"polluted": true}, "x": [null, 1]})
                 .as_object()
                 .unwrap()
+        ));
+    }
+    #[test]
+    fn compact_diagnostics_omit_oversized_entries_with_explicit_count() {
+        let oversized =
+            json!({"computer":"HOST","candidate_groups":{"GROUP":["x".repeat(70_000)]}});
+        let small = json!({"computer":"HOST","candidate_groups":{"GROUP":["USER"]}});
+        let mut value = json!({"analysis":{"local_group_ambiguities":[oversized,small.clone()]}});
+        compact_analysis_value(&mut value);
+        assert_eq!(value["analysis"]["local_group_ambiguities"], json!([small]));
+        assert_eq!(value["analysis"]["diagnostics_truncated"], 1);
+    }
+
+    #[test]
+    fn failed_file_write_removes_only_its_new_staging_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("snapshot.json");
+        let result = private_output(path.to_str().unwrap(), |file| {
+            LimitedFile {
+                file,
+                bytes: 0,
+                limit: 3,
+            }
+            .write_all(b"four")?;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(!path.exists());
+        fs::write(&path, b"existing").unwrap();
+        assert!(private_output(path.to_str().unwrap(), |_file| Ok(())).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"existing");
+    }
+
+    #[test]
+    fn rules_limits_apply_even_when_a_rule_is_disabled() {
+        let mut value = json!({"type":"previewAssetGroups","configuration":{"groups":[{"label":"Tag_Test","seeds":[{"type":"cypher","value":"RETURN 1"}],"enabled":false,"priority":1_000_001}]}});
+        assert!(!validate(
+            &serde_json::from_value::<Command>(value.clone()).unwrap()
+        ));
+        value["configuration"]["groups"][0]["priority"] = json!(0);
+        assert!(validate(
+            &serde_json::from_value::<Command>(value.clone()).unwrap()
+        ));
+        value["configuration"]["groups"][0]["seeds"][0]["value"] = json!("x".repeat(65_537));
+        assert!(!validate(
+            &serde_json::from_value::<Command>(value).unwrap()
         ));
     }
 }

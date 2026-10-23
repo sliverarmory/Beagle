@@ -18,12 +18,15 @@ use std::{
     about = "Headless Active Directory graph analysis using Rust and GraphQLite"
 )]
 struct Cli {
+    /// Print embedded desktop runtime build provenance without opening a database.
+    #[arg(long, exclusive = true)]
+    build_info: bool,
     #[arg(long, global = true, default_value = "beagle.db")]
     db: PathBuf,
     #[arg(long, global = true, default_value_t = 30)]
     query_timeout: u64,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 #[derive(Subcommand)]
 enum Command {
@@ -133,10 +136,20 @@ fn print(value: &Value) -> Result<()> {
 }
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    if matches!(cli.command, Command::HelperStdio) {
+    if cli.build_info {
+        return print(&json!({
+            "name": "beagle",
+            "version": env!("CARGO_PKG_VERSION"),
+            "protocol": 1,
+            "beagleRevision": env!("BEAGLE_BUILD_REVISION"),
+            "target": env!("BEAGLE_BUILD_TARGET"),
+        }));
+    }
+    let command = cli.command.context("a command is required")?;
+    if matches!(command, Command::HelperStdio) {
         return helper_stdio::run_stdio();
     }
-    if let Command::Queries { name } = &cli.command {
+    if let Command::Queries { name } = &command {
         return print(&match name {
             Some(name) => Beagle::saved_query(name)?,
             None => json!(Beagle::query_catalog()),
@@ -144,7 +157,7 @@ fn run() -> Result<()> {
     }
     let mut beagle = Beagle::open(&cli.db)?;
     beagle.set_query_timeout(std::time::Duration::from_secs(cli.query_timeout));
-    let result = match cli.command {
+    let result = match command {
         Command::Ingest {
             inputs,
             analyze,

@@ -9,7 +9,7 @@ and GraphQLite.
 
 ## Build
 
-Install Rust stable, a C compiler, Bison, and Flex, then build:
+Install Rust 1.94.1 (pinned in `rust-toolchain.toml`), a C compiler, Bison, and Flex, then build:
 
 ```sh
 cargo build --locked --release
@@ -54,6 +54,10 @@ persistent database connection. See the [desktop helper protocol](docs/helper-st
 for framing, commands, limits, errors, and host responsibilities. The original
 `serve-stdio` protocol and ordinary CLI commands remain available.
 
+`beagle --build-info` prints the embedded version, helper protocol, source
+revision, and target without opening a database. Release workflows require an
+exact source revision and verify it against the release checkout before packaging.
+
 ## Checks and releases
 
 [Build checks](.github/workflows/build.yml) run on pushes and pull requests for
@@ -66,5 +70,15 @@ pass its checks before binary archives, license notices, provenance, and SHA-256
 checksums are published to a GitHub release. Release packages contain no private
 data or compatibility fixtures. Python 3.13 is installed only for release
 packaging and validation; it is not part of compilation or tests.
+
+Desktop consumers can pin a release archive and its SHA-256 at application build
+time. Each archive contains the executable, license notices, and
+`BUILD-PROVENANCE.json` with the source commit/tree, exact Rust toolchain,
+locked dependency hash, native build inputs, helper protocol, and executable
+SHA-256. `beagle-runtime-manifest.json` collects those identities and archive and
+executable hashes for every target. `SHA256SUMS` also covers that manifest. Verify
+the pinned archive before extracting and bundling it; applications do not need
+to download a helper at runtime. macOS apps can combine the two verified Mach-O
+executables with `lipo` when creating a universal application.
 
 `ROADMAP.md` is a local planning file and is excluded from Git.

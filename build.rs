@@ -18,11 +18,26 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
-    for name in ["BEAGLE_WINDOWS_POSIX_ROOT", "BISON", "FLEX"] {
+    for name in [
+        "BEAGLE_WINDOWS_POSIX_ROOT",
+        "BISON",
+        "FLEX",
+        "BEAGLE_SOURCE_REVISION",
+        "BEAGLE_RELEASE_BUILD",
+    ] {
         println!("cargo:rerun-if-env-changed={name}");
     }
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target = env::var("TARGET").unwrap();
+    let revision = env::var("BEAGLE_SOURCE_REVISION").unwrap_or_else(|_| "development".into());
+    if env::var("BEAGLE_RELEASE_BUILD").as_deref() == Ok("1") {
+        assert!(
+            revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "release builds require a full BEAGLE_SOURCE_REVISION commit"
+        );
+    }
+    println!("cargo:rustc-env=BEAGLE_BUILD_REVISION={revision}");
+    println!("cargo:rustc-env=BEAGLE_BUILD_TARGET={target}");
     assert!(
         matches!(target_os.as_str(), "macos" | "linux") || target == "x86_64-pc-windows-gnu",
         "Beagle's static GraphQLite build supports macOS, Linux, and Windows x64 with the x86_64-pc-windows-gnu target"

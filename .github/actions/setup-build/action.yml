@@ -12,7 +12,7 @@ runs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
       with:
-        toolchain: stable
+        toolchain: '1.94.1'
         targets: ${{ inputs.target }}
         components: clippy,rustfmt
 

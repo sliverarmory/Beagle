@@ -55,7 +55,7 @@ impl Helper {
             ready["limits"],
             json!({"requestBytes":1_048_576,"responseBytes":33_554_432})
         );
-        assert_eq!(ready["operations"].as_array().unwrap().len(), 14);
+        assert_eq!(ready["operations"].as_array().unwrap().len(), 24);
         helper
     }
     fn read(&self) -> Value {
@@ -429,4 +429,193 @@ fn legacy_cli_and_serve_stdio_keep_their_original_protocol() {
     assert_eq!(lines[0]["value"]["rows"], json!([{"answer":7}]));
     assert_eq!(lines[1]["value"]["nodes"], 0);
     assert!(lines.iter().all(|line| line.get("type").is_none()));
+}
+
+#[test]
+fn file_export_backup_replace_and_cleanup_preserve_full_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("graph.db");
+    let snapshot = temp.path().join("snapshot.json");
+    fs::write(&snapshot, json!({"nodes":[
+        {"objectid":"USER","labels":["Base","User"],"properties":{"objectid":"USER","name":"USER"}},
+        {"objectid":"HOST","labels":["Base","Computer"],"properties":{"objectid":"HOST","name":"HOST"}}
+    ],"edges":[{"source":"HOST","target":"USER","kind":"HasSession","properties":{},"derived":false}]}).to_string()).unwrap();
+    let mut helper = Helper::start(temp.path());
+    helper.success(open(&db));
+    assert_eq!(
+        helper.request(json!({"type":"setImportHistoryRetention","limit":9}))["error"]["code"],
+        "invalid_input"
+    );
+    assert_eq!(
+        helper.success(json!({"type":"setImportHistoryRetention","limit":10})),
+        json!({"limit":10,"retained":0,"removed":0})
+    );
+
+    helper.success(
+        json!({"type":"importSnapshot","path":snapshot,"analyze":false,"compactReports":true}),
+    );
+    helper.success(json!({"type":"tag","objectid":"USER","tag":"owned","enabled":true}));
+    let backup = temp.path().join("backup.db");
+    assert!(
+        helper.success(json!({"type":"backup","path":backup}))["bytes"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        helper.request(json!({"type":"backup","path":backup}))["ok"],
+        false,
+        "create-new must not overwrite a prior backup"
+    );
+    let copied = beagle::Beagle::open(&backup).unwrap();
+    assert_eq!(
+        copied
+            .query("MATCH (n:Tag_Owned) RETURN count(n) AS count", &json!({}))
+            .unwrap()["rows"][0]["count"],
+        1
+    );
+    assert!(copied.store().metadata("manual_tags").unwrap().is_some());
+    let cleaned = helper.success(json!({"type":"cleanup","kinds":["HasSession"]}));
+    assert_eq!(cleaned["removedEdges"], 1);
+    helper.success(json!({"type":"analyze","compactReports":true}));
+    assert_eq!(helper.success(json!({"type":"query","cypher":"MATCH ()-[r:HasSession]->() RETURN count(r) AS count","parameters":{}}))["rows"][0]["count"],0);
+    let output = temp.path().join("export.json");
+    let exported = helper.success(json!({"type":"exportToFile","path":output}));
+    assert_eq!(exported["nodes"], 2);
+    assert_eq!(
+        fs::metadata(&output).unwrap().len(),
+        exported["bytes"].as_u64().unwrap()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    assert_eq!(
+        helper.request(json!({"type":"exportToFile","path":output}))["ok"],
+        false
+    );
+    assert_eq!(
+        helper.request(json!({"type":"cleanup","kinds":["GenericAll"]}))["error"]["code"],
+        "invalid_input"
+    );
+    let users = temp.path().join("users.json");
+    fs::write(&users,json!({"meta":{"type":"users","version":6,"count":1},"data":[{"ObjectIdentifier":"OTHER","Properties":{"name":"OTHER"}}]}).to_string()).unwrap();
+    let replaced = helper.success(json!({"type":"ingest","paths":[users],"analyze":false,"mode":"replace","compactReports":true,"historyLimit":25}));
+    assert_eq!(replaced["nodes"], 1);
+    assert_eq!(replaced["ingest"]["sourceRecordsCount"], 1);
+    assert!(replaced["ingest"].get("source_records").is_none());
+    assert_eq!(helper.success(json!({"type":"stats"}))["nodes"], 1);
+    helper.finish(true);
+}
+
+#[test]
+fn compact_ingest_and_file_export_exceed_transport_limit_without_losing_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let users = temp.path().join("large-users.json");
+    let records: Vec<_> = (0..100).map(|index| json!({"ObjectIdentifier":format!("USER-{index:03}"),"Properties":{"name":format!("USER-{index:03}"),"description":"x".repeat(350_000)},"Sessions":{"Collected":false,"FailureReason":"AccessDenied","Results":[]}})).collect();
+    fs::write(
+        &users,
+        serde_json::to_vec(
+            &json!({"meta":{"type":"users","version":6,"count":100},"data":records}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut helper = Helper::start(temp.path());
+    helper.success(open(&temp.path().join("large.db")));
+    let imported = helper
+        .success(json!({"type":"ingest","paths":[users],"analyze":false,"compactReports":true}));
+    assert_eq!(imported["nodes"], 100);
+    assert_eq!(imported["ingest"]["sourceRecordsCount"], 100);
+    assert_eq!(
+        imported["ingest"]["collectionQuality"]["Sessions"]["failed"],
+        100
+    );
+    assert_eq!(
+        imported["ingest"]["collectionQuality"]["Sessions"]["failureReasons"]["AccessDenied"],
+        100
+    );
+    assert!(serde_json::to_vec(&imported).unwrap().len() < 16_384);
+    assert_eq!(
+        helper.request(json!({"type":"export"}))["error"]["code"],
+        "response_too_large"
+    );
+    let output = temp.path().join("large-export.json");
+    let exported = helper.success(json!({"type":"exportToFile","path":output}));
+    assert!(exported["bytes"].as_u64().unwrap() > 33_554_432);
+    let graph: Value = serde_json::from_reader(fs::File::open(&output).unwrap()).unwrap();
+    assert_eq!(graph["nodes"].as_array().unwrap().len(), 100);
+    assert!(
+        graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|node| node["properties"]["description"].as_str().unwrap().len() == 350_000)
+    );
+    assert_eq!(helper.success(json!({"type":"stats"}))["nodes"], 100);
+    helper.finish(true);
+}
+
+#[test]
+fn close_database_releases_ownership_without_restarting_helper() {
+    let temp = tempfile::tempdir().unwrap();
+    let original = temp.path().join("original.db");
+    let staged = temp.path().join("staged.db");
+    let published = temp.path().join("published.db");
+    let mut helper = Helper::start(temp.path());
+    let pid = helper.child.id();
+    helper.success(json!({"type":"closeDatabase"}));
+    helper.success(open(&original));
+    let snapshot = temp.path().join("snapshot.json");
+    fs::write(
+        &snapshot,
+        json!({"nodes":[{"objectid":"PERSISTENT","labels":["User"],"properties":{}}],"edges":[]})
+            .to_string(),
+    )
+    .unwrap();
+    helper.success(json!({"type":"importSnapshot","path":snapshot,"analyze":false}));
+    helper.success(json!({"type":"backup","path":staged}));
+    helper.success(json!({"type":"closeDatabase"}));
+    assert_eq!(
+        helper.request(json!({"type":"stats"}))["error"]["code"],
+        "database_not_open"
+    );
+    helper.success(open(&staged));
+    assert_eq!(helper.success(json!({"type":"stats"}))["nodes"], 1);
+    helper.success(json!({"type":"closeDatabase"}));
+    fs::rename(&staged, &published).unwrap();
+    helper.success(open(&published));
+    assert_eq!(helper.success(json!({"type":"stats"}))["nodes"], 1);
+    assert_eq!(helper.child.id(), pid);
+    helper.success(json!({"type":"shutdown"}));
+    helper.finish(true);
+}
+
+#[test]
+fn compact_collection_quality_counts_individual_local_group_probes() {
+    let temp = tempfile::tempdir().unwrap();
+    let computers = temp.path().join("computers.json");
+    fs::write(&computers, json!({"meta":{"type":"computers","version":6,"count":3},"data":[
+        {"ObjectIdentifier":"HOST","Properties":{"name":"HOST"},"LocalGroups":[
+            {"Collected":true,"ObjectIdentifier":"HOST-544","Results":[]},
+            {"Collected":false,"ObjectIdentifier":"HOST-555","FailureReason":"AccessDenied","Results":[]},
+            {"ObjectIdentifier":"HOST-556","Results":[]}
+        ]},
+        {"ObjectIdentifier":"EMPTY","Properties":{"name":"EMPTY"},"LocalGroups":[]},
+        {"ObjectIdentifier":"ABSENT","Properties":{"name":"ABSENT"}}
+    ]}).to_string()).unwrap();
+    let mut helper = Helper::start(temp.path());
+    helper.success(open(&temp.path().join("graph.db")));
+    let outcome = helper.success(
+        json!({"type":"ingest","paths":[computers],"analyze":false,"compactReports":true}),
+    );
+    assert_eq!(
+        outcome["ingest"]["collectionQuality"]["LocalGroups"],
+        json!({"collected":1,"failed":1,"unknown":1,"failureReasons":{"AccessDenied":1},"failureReasonsTruncated":0})
+    );
+    helper.finish(true);
 }

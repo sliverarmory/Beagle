@@ -5,6 +5,7 @@
 !/.gitattributes
 !/Cargo.toml
 !/Cargo.lock
+!/rust-toolchain.toml
 !/build.rs
 !/build-support/
 /build-support/*
@@ -62,6 +63,8 @@ ROADMAP.md
 /tests/*
 !/tests/analysis.rs
 !/tests/asset_groups.rs
+!/tests/asset_group_rules.rs
+!/tests/import_history_retention.rs
 !/tests/cli.rs
 !/tests/helper_stdio.rs
 !/tests/composition.rs

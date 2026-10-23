@@ -15,7 +15,7 @@ its own deadlines and kill/restart a helper that hangs or fails framing.
 The first message is:
 
 ```json
-{"type":"ready","protocol":1,"name":"beagle","version":"0.1.0","operations":["open","stats","query","savedQuery","catalog","savedQueryInfo","entity","ingest","analyze","tag","compose","export","paths","shutdown"],"limits":{"requestBytes":1048576,"responseBytes":33554432}}
+{"type":"ready","protocol":1,"name":"beagle","version":"0.1.0","operations":["open","stats","query","savedQuery","catalog","savedQueryInfo","entity","ingest","analyze","tag","compose","export","paths","shutdown","importSnapshot","exportToFile","backup","cleanup","getAssetGroups","previewAssetGroups","applyAssetGroups","relayTargets","closeDatabase","setImportHistoryRetention"],"limits":{"requestBytes":1048576,"responseBytes":33554432}}
 ```
 
 `version` comes from the built crate version. Both limits include the trailing
@@ -38,30 +38,46 @@ Requests execute serially. The client correlates responses by `id`:
 {"type":"response","id":2,"ok":true,"value":{"columns":["value"],"rows":[{"value":42}]}}
 ```
 
-All fields shown for a command are required; unknown fields are rejected.
+All fields shown for a command are required unless marked optional; unknown
+fields are rejected.
 
 | Command type | Fields after `type` | Result |
 | --- | --- | --- |
 | `open` | `database`, `queryTimeoutMs` | `null`; owns one database connection |
+| `closeDatabase` | none | `null`; releases the database so another can be opened |
 | `stats` | none | Existing CLI statistics object |
 | `query` | `cypher`, `parameters` | Existing columns/rows envelope |
 | `savedQuery` | `id`, `parameters` | Existing columns/rows envelope |
 | `catalog` | none | Array of authoritative saved-query metadata, including `parameterized_query` and `parameters` |
 | `savedQueryInfo` | `id` | One authoritative saved-query metadata object |
 | `entity` | `objectid` | Existing columns/rows envelope |
-| `ingest` | `paths`, `analyze` | Existing import report; merges records |
-| `analyze` | none | Existing analysis report using persisted/default options |
+| `ingest` | `paths`, `analyze`; optional `mode`, `historyLimit`, `compactReports` | Existing import report; `mode` defaults to `merge` and also accepts `replace` |
+| `analyze` | optional `compactReports` | Existing analysis report using persisted/default options |
+| `importSnapshot` | `path`, `analyze`; optional `compactReports` | Import canonical graph JSON from an authorized file |
+| `exportToFile` | `path`; optional `kind` (`current` or `raw`) | Write graph JSON atomically to a new file |
+| `backup` | `path` | Write a database backup to a new file |
+| `cleanup` | `kinds` | Remove selected session/local-group relationships |
+| `getAssetGroups` | none | Persisted asset-group configuration |
+| `previewAssetGroups` | `configuration` | Preview a rule selection without changing the graph |
+| `applyAssetGroups` | `configuration` | Apply rules and return selection/analysis diagnostics |
+| `relayTargets` | `source`, `target`, `kind` | Intermediate NTLM relay targets |
+| `setImportHistoryRetention` | `limit` (10, 25, 50, or 100) | Update and prune persisted import history |
 | `tag` | `objectid`, `tag`, `enabled` | Existing tag report |
 | `compose` | `source`, `target`, `kind` | Existing canonical graph snapshot |
 | `export` | none | Current canonical graph snapshot |
 | `paths` | `source`, `target`, `all`, `maxHops` | Existing columns/rows envelope |
 | `shutdown` | none | `null`, followed by clean process exit |
 
-`catalog`, `savedQueryInfo`, and `shutdown` work before `open`. All other
-operations require a successful `open`. A helper can open only one database;
-project switches require a fresh helper. An unsuccessful open may be retried.
+`catalog`, `savedQueryInfo`, `closeDatabase`, and `shutdown` work before `open`.
+All other operations require a successful `open`. A helper can open only one
+database at a time; close it before switching projects. An unsuccessful open may be retried.
 EOF after a complete line cleanly releases the database without an extra reply.
 An incomplete final line is a protocol error.
+
+`compactReports` defaults to false. When true, large import/analysis diagnostic
+collections are bounded and include explicit omitted counts. File export and
+backup avoid transporting large graphs through the bounded response channel;
+hosts must authorize the destination path before sending either operation.
 
 ## Input bounds
 

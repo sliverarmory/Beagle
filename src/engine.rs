@@ -183,6 +183,21 @@ impl Beagle {
     /// against the retained collection. Manual tag overrides are reapplied in
     /// both modes, even when analysis is disabled.
     pub fn ingest(&mut self, inputs: &[PathBuf], options: IngestOptions) -> Result<IngestOutcome> {
+        self.ingest_with_history_retention(inputs, options, None)
+    }
+
+    /// Atomically import and optionally update the persisted source-report policy.
+    /// Existing callers retain their configured policy, or the legacy unlimited
+    /// policy until an explicit retention limit is chosen.
+    pub fn ingest_with_history_retention(
+        &mut self,
+        inputs: &[PathBuf],
+        options: IngestOptions,
+        history_limit: Option<usize>,
+    ) -> Result<IngestOutcome> {
+        if let Some(limit) = history_limit {
+            crate::store::validate_import_history_limit(limit)?;
+        }
         let replace = options.mode == ImportMode::Replace;
         let mut graph = if replace {
             GraphData::default()
@@ -217,9 +232,20 @@ impl Beagle {
             nodes: graph.nodes.len(),
             edges: graph.edges.len(),
         };
-        self.store
-            .save_import(&graph, &raw, &serde_json::to_value(&outcome)?, replace)?;
+        self.store.save_import_with_retention(
+            &graph,
+            &raw,
+            &serde_json::to_value(&outcome)?,
+            replace,
+            history_limit,
+        )?;
         Ok(outcome)
+    }
+
+    /// Persist a source-report retention limit and prune only archived reports.
+    /// The retained raw graph, manual tags and asset-group configuration remain.
+    pub fn set_import_history_retention(&mut self, limit: usize) -> Result<Value> {
+        self.store.set_import_history_retention(limit)
     }
 
     /// Rebuild derived relationships from the retained raw graph.
@@ -253,6 +279,38 @@ impl Beagle {
         Ok(outcome)
     }
 
+    /// Remove selected collected links and atomically rebuild derived state.
+    /// Original import history remains an archive; retained raw graph is updated.
+    pub fn cleanup_relationships(&mut self, kinds: &[String]) -> Result<Value> {
+        if kinds.is_empty()
+            || kinds.len() > 4
+            || kinds.iter().any(|kind| {
+                !matches!(
+                    kind.as_str(),
+                    "HasSession"
+                        | "LocalToComputer"
+                        | "MemberOfLocalGroup"
+                        | "RemoteInteractiveLogonRight"
+                )
+            })
+        {
+            bail!("unsupported collected relationship cleanup");
+        }
+        let mut graph = self.store.raw_graph()?;
+        let before = graph.edges.len();
+        graph.edges.retain(|_, edge| !kinds.contains(&edge.kind));
+        let removed = before - graph.edges.len();
+        let raw = graph.clone();
+        let options = self.analysis_options()?;
+        let analysis = analysis::analyze_with_options(&mut graph, &options)?;
+        let asset_groups = self.store.apply_saved_asset_groups(&mut graph)?;
+        self.store.apply_manual_tags(&mut graph)?;
+        let outcome = json!({"removedEdges":removed,"kinds":kinds,"analysis":analysis,"options":options,"asset_groups":asset_groups,"nodes":graph.nodes.len(),"edges":graph.edges.len()});
+        self.store
+            .save(&graph, Some(&raw), Some(("last_cleanup", &outcome)))?;
+        Ok(outcome)
+    }
+
     /// Return persisted analysis settings, or defaults for a new database.
     pub fn analysis_options(&self) -> Result<analysis::AnalysisOptions> {
         Ok(self
@@ -264,6 +322,29 @@ impl Beagle {
             .unwrap_or_default())
     }
 
+    /// Read saved rule settings without changing the current graph.
+    pub fn asset_group_configuration(&self) -> Result<asset_groups::Configuration> {
+        Ok(self
+            .store
+            .metadata("asset_groups")?
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default())
+    }
+
+    /// Evaluate a configuration against the same staged graph used by apply.
+    /// Neither graph data nor saved settings are changed. Manual tag overrides
+    /// apply after these rule selections when a configuration is committed.
+    pub fn preview_asset_groups(
+        &self,
+        configuration: &asset_groups::Configuration,
+    ) -> Result<asset_groups::SelectionReport> {
+        let mut graph = self.store.raw_graph()?;
+        self.store.retain_previous_ownership(&mut graph)?;
+        analysis::analyze_with_options(&mut graph, &self.analysis_options()?)?;
+        self.store.apply_asset_groups(&mut graph, configuration)
+    }
+
     /// Reanalyze the retained collection and apply and persist asset groups.
     ///
     /// Selectors execute against the staged graph. A failed selector does not
@@ -272,9 +353,21 @@ impl Beagle {
         &mut self,
         configuration: &asset_groups::Configuration,
     ) -> Result<asset_groups::SelectionReport> {
+        Ok(self
+            .apply_asset_groups_with_analysis(configuration)?
+            .asset_groups
+            .expect("applying asset groups always returns a selection report"))
+    }
+
+    /// Apply rules and return the diagnostics from that same analysis pass.
+    pub fn apply_asset_groups_with_analysis(
+        &mut self,
+        configuration: &asset_groups::Configuration,
+    ) -> Result<AnalysisOutcome> {
         let mut graph = self.store.raw_graph()?;
         self.store.retain_previous_ownership(&mut graph)?;
-        analysis::analyze_with_options(&mut graph, &self.analysis_options()?)?;
+        let options = self.analysis_options()?;
+        let analysis = analysis::analyze_with_options(&mut graph, &options)?;
         let report = self.store.apply_asset_groups(&mut graph, configuration)?;
         self.store.apply_manual_tags(&mut graph)?;
         self.store.save(
@@ -282,7 +375,11 @@ impl Beagle {
             None,
             Some(("asset_groups", &serde_json::to_value(configuration)?)),
         )?;
-        Ok(report)
+        Ok(AnalysisOutcome {
+            analysis,
+            options,
+            asset_groups: Some(report),
+        })
     }
 
     /// Replace the current and raw graph with a canonical snapshot.

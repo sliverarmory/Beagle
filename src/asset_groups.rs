@@ -21,9 +21,17 @@ pub struct AssetGroup {
     pub expansion: Expansion,
     #[serde(default)]
     pub exclusions: BTreeSet<String>,
-    /// Tier precedence: earlier tier groups win when memberships overlap.
+    /// Tier precedence: lower priorities win; equal priorities retain list order.
     #[serde(default)]
     pub tier: bool,
+    /// Disabled rules are retained but do not select objects or override analysis tags.
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub priority: u32,
+}
+fn enabled_by_default() -> bool {
+    true
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
@@ -56,7 +64,9 @@ pub fn apply(
     let mut report = SelectionReport::default();
     let mut tiers = BTreeSet::new();
     let mut labels = BTreeSet::new();
-    for group in &config.groups {
+    let mut ordered: Vec<_> = config.groups.iter().collect();
+    ordered.sort_by_key(|group| group.priority);
+    for group in ordered {
         if !group.label.starts_with("Tag_")
             || !group
                 .label
@@ -67,6 +77,10 @@ pub fn apply(
         }
         if !labels.insert(group.label.clone()) {
             bail!("duplicate asset-group label {}", group.label);
+        }
+        if !group.enabled {
+            report.selected.insert(group.label.clone(), Vec::new());
+            continue;
         }
         let mut seeds = BTreeSet::new();
         for seed in &group.seeds {
@@ -104,7 +118,7 @@ pub fn apply(
             .selected
             .insert(group.label.clone(), selected.into_iter().collect());
     }
-    for group in &config.groups {
+    for group in config.groups.iter().filter(|group| group.enabled) {
         let selected: BTreeSet<_> = report.selected[&group.label].iter().collect();
         for node in graph.nodes.values_mut() {
             let include = selected.contains(&node.objectid);

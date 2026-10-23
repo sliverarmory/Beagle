@@ -5,6 +5,13 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, path::Path, time::Duration};
 
+pub(crate) fn validate_import_history_limit(limit: usize) -> Result<()> {
+    if ![10, 25, 50, 100].contains(&limit) {
+        bail!("import history retention must be 10, 25, 50 or 100 reports");
+    }
+    Ok(())
+}
+
 pub struct Store {
     conn: Connection,
     query_timeout: Duration,
@@ -22,6 +29,12 @@ impl Store {
         };
         store.execute("MATCH (n) RETURN count(n) AS count", &json!({}))?;
         Ok(store)
+    }
+
+    /// Consistent online copy of the complete database, including all metadata.
+    pub fn backup_to(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.conn.backup("main", path, None)?;
+        Ok(())
     }
 
     pub fn capabilities(&self) -> Result<Value> {
@@ -189,6 +202,36 @@ impl Store {
         }
     }
 
+    /// None preserves legacy behavior until the operator chooses a policy.
+    pub fn import_history_retention(&self) -> Result<Option<usize>> {
+        self.metadata("import_history_retention")?
+            .map(|value| {
+                let limit: usize = serde_json::from_value(value)?;
+                validate_import_history_limit(limit)?;
+                Ok(limit)
+            })
+            .transpose()
+    }
+
+    /// Prune archived collector reports without rewriting collected graph data.
+    pub fn set_import_history_retention(&self, limit: usize) -> Result<Value> {
+        validate_import_history_limit(limit)?;
+        let tx = self.conn.unchecked_transaction()?;
+        let mut history = self.import_history()?;
+        let removed = history.len().saturating_sub(limit);
+        history.drain(..removed);
+        self.put_metadata("import_history_retention", &json!(limit))?;
+        self.put_metadata("import_history", &json!(history))?;
+        if let Some(last) = history.last() {
+            self.put_metadata("last_import", last)?;
+        } else {
+            self.conn
+                .execute("DELETE FROM bh_metadata WHERE key='last_import'", [])?;
+        }
+        tx.commit()?;
+        Ok(json!({"limit":limit,"retained":history.len(),"removed":removed}))
+    }
+
     fn put_metadata(&self, key: &str, value: &Value) -> Result<()> {
         self.conn.execute("INSERT INTO bh_metadata(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key,value.to_string()])?;
         Ok(())
@@ -237,12 +280,13 @@ impl Store {
         raw: Option<&GraphData>,
         report: Option<(&str, &Value)>,
     ) -> Result<()> {
-        self.save_impl(graph, raw, report, None)
+        self.save_impl(graph, raw, report, None, None)
     }
 
     /// Publish an imported graph, its raw snapshot and complete provenance in
     /// one transaction. Replacement starts a new history; incremental imports
-    /// retain every previously accepted report. `last_import` stays the latest.
+    /// retain accepted reports according to the configured retention policy.
+    /// `last_import` stays the latest.
     pub fn save_import(
         &self,
         graph: &GraphData,
@@ -250,11 +294,26 @@ impl Store {
         report: &Value,
         replace: bool,
     ) -> Result<()> {
+        self.save_import_with_retention(graph, raw, report, replace, None)
+    }
+
+    pub fn save_import_with_retention(
+        &self,
+        graph: &GraphData,
+        raw: &GraphData,
+        report: &Value,
+        replace: bool,
+        history_limit: Option<usize>,
+    ) -> Result<()> {
+        if let Some(limit) = history_limit {
+            validate_import_history_limit(limit)?;
+        }
         self.save_impl(
             graph,
             Some(raw),
             Some(("last_import", report)),
             Some(replace),
+            history_limit,
         )
     }
 
@@ -264,7 +323,9 @@ impl Store {
         raw: Option<&GraphData>,
         report: Option<(&str, &Value)>,
         reset_import_history: Option<bool>,
+        history_limit: Option<usize>,
     ) -> Result<()> {
+        let limit = history_limit.or(self.import_history_retention()?);
         let tx = self.conn.unchecked_transaction()?;
         let history = reset_import_history
             .map(|reset| -> Result<Vec<Value>> {
@@ -274,6 +335,10 @@ impl Store {
                     self.import_history()?
                 };
                 history.push(report.expect("save_import supplies its report").1.clone());
+                if let Some(limit) = limit {
+                    let removed = history.len().saturating_sub(limit);
+                    history.drain(..removed);
+                }
                 Ok(history)
             })
             .transpose()?;
@@ -331,6 +396,9 @@ impl Store {
         }
         if let Some(history) = history {
             self.put_metadata("import_history", &json!(history))?;
+        }
+        if let Some(limit) = history_limit {
+            self.put_metadata("import_history_retention", &json!(limit))?;
         }
         tx.commit()?;
         Ok(())

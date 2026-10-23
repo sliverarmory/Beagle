@@ -32,6 +32,7 @@ LICENSE_FILES = (
     "licenses/SQLite-public-domain.txt",
 )
 WINDOWS_LICENSE_DIRS = ("libsystre", "libtre", "gettext-runtime", "libiconv")
+RUNTIME_MANIFEST = "beagle-runtime-manifest.json"
 
 
 def sha256(path):
@@ -82,6 +83,40 @@ def archive_name(version, target):
     return f"beagle-{version}-{target}{suffix}"
 
 
+def pinned_toolchain():
+    toolchain = tomllib.loads((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))
+    version = toolchain["toolchain"]["channel"]
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ValueError("release Rust toolchain must be pinned to an exact version")
+    return version
+
+
+def helper_protocol(executable, version, commit, target):
+    info = json.loads(command(str(executable), "--build-info"))
+    expected = {
+        "name": "beagle", "version": version, "protocol": 1,
+        "beagleRevision": commit, "target": target,
+    }
+    if info != expected:
+        raise ValueError("executable build info does not match the release source/target")
+    probe = subprocess.run(
+        [str(executable), "helper-stdio"],
+        input='{"id":1,"command":{"type":"shutdown"}}\n',
+        capture_output=True, text=True, timeout=30, check=True,
+    )
+    messages = [json.loads(line) for line in probe.stdout.splitlines()]
+    if len(messages) != 2:
+        raise ValueError("helper did not return exactly ready and shutdown messages")
+    ready, shutdown = messages
+    if (ready.get("type"), ready.get("name"), ready.get("version"), ready.get("protocol")) != (
+        "ready", "beagle", version, 1
+    ) or not {"open", "query", "catalog", "shutdown"}.issubset(ready.get("operations", [])):
+        raise ValueError("helper ready message does not match the desktop protocol")
+    if shutdown != {"type": "response", "id": 1, "ok": True, "value": None}:
+        raise ValueError("helper did not shut down cleanly")
+    return ready
+
+
 def source_archive_name(version):
     return f"beagle-{version}-windows-dependency-sources.tar.gz"
 
@@ -128,7 +163,7 @@ integration, public query catalogs, and checksum-pinned GraphQLite sources.
 
 To rebuild Beagle against these libraries or your modified versions:
 
-1. Install Rust stable with the x86_64-pc-windows-gnu target and an MSYS2
+1. Install Rust {pinned_toolchain()} with the x86_64-pc-windows-gnu target and an MSYS2
    MINGW64 toolchain (gcc, bison, and flex). To rebuild the dependency
    packages themselves, also install MSYS2's base-devel, tar, and zstd.
 2. Extract the desired .src.tar.zst package in MSYS2. Its PKGBUILD and
@@ -160,6 +195,14 @@ def package(version, tag, target):
     executable = executable.resolve()
     if command(str(executable), "--version") != f"beagle {version}":
         raise ValueError("built executable version does not match the release tag")
+    if command("git", "status", "--porcelain"):
+        raise ValueError("release packaging requires a clean source checkout")
+    commit = command("git", "rev-parse", "HEAD")
+    rust_toolchain = pinned_toolchain()
+    rustc = command("rustc", "--version", "--verbose")
+    if rustc.split()[1] != rust_toolchain:
+        raise ValueError("active Rust compiler does not match rust-toolchain.toml")
+    ready = helper_protocol(executable, version, commit, target)
     inputs = build_inputs()
     native = native_build_metadata()
     provenance = {
@@ -167,9 +210,13 @@ def package(version, tag, target):
         "project": "beagle",
         "version": version,
         "tag": tag,
-        "commit": command("git", "rev-parse", "HEAD"),
+        "commit": commit,
+        "tree": command("git", "rev-parse", "HEAD^{tree}"),
         "target": target,
-        "rustc": command("rustc", "--version", "--verbose"),
+        "rustc": rustc,
+        "rust_toolchain": rust_toolchain,
+        "helper_protocol": ready["protocol"],
+        "helper_operations": ready["operations"],
         "cargo_lock_sha256": sha256(ROOT / "Cargo.lock"),
         "binary": {"name": executable_name, "sha256": sha256(executable)},
         "build_inputs": inputs,
@@ -223,6 +270,28 @@ def package(version, tag, target):
         windows_sources(version, provenance["commit"], epoch)
 
 
+def runtime_archive_record(archive, version, target):
+    root = f"beagle-{version}-{target}"
+    executable = "beagle.exe" if target.endswith("windows-gnu") else "beagle"
+    if target.endswith("windows-gnu"):
+        with zipfile.ZipFile(archive) as bundle:
+            provenance = json.loads(bundle.read(f"{root}/BUILD-PROVENANCE.json"))
+            binary_sha256 = hashlib.sha256(bundle.read(f"{root}/{executable}")).hexdigest()
+    else:
+        with tarfile.open(archive, "r:gz") as bundle:
+            provenance = json.load(bundle.extractfile(f"{root}/BUILD-PROVENANCE.json"))
+            binary_sha256 = hashlib.file_digest(bundle.extractfile(f"{root}/{executable}"), "sha256").hexdigest()
+    if provenance.get("target") != target or provenance.get("binary") != {
+        "name": executable, "sha256": binary_sha256
+    }:
+        raise ValueError(f"release binary provenance mismatch: {target}")
+    return provenance, {
+        "archive": {"name": archive.name, "sha256": sha256(archive)},
+        "root": root,
+        "binary": provenance["binary"],
+    }
+
+
 def checksums(version):
     output = ROOT / "dist"
     expected = {archive_name(version, target) for target in TARGETS}
@@ -230,6 +299,26 @@ def checksums(version):
     actual = {path.name for path in output.iterdir()}
     if actual != expected:
         raise ValueError(f"release archive set mismatch: missing={expected - actual}, unexpected={actual - expected}")
+    manifest = {
+        "schema_version": 1,
+        "project": "beagle",
+        "version": version,
+        "tag": f"v{version}",
+        "commit": command("git", "rev-parse", "HEAD"),
+        "tree": command("git", "rev-parse", "HEAD^{tree}"),
+        "rust_toolchain": pinned_toolchain(),
+        "helper_protocol": 1,
+        "cargo_lock_sha256": sha256(ROOT / "Cargo.lock"),
+    }
+    targets = {}
+    for target in TARGETS:
+        provenance, record = runtime_archive_record(output / archive_name(version, target), version, target)
+        if any(provenance.get(key) != value for key, value in manifest.items()):
+            raise ValueError(f"release archive source identity mismatch: {target}")
+        targets[target] = record
+    manifest["targets"] = targets
+    (output / RUNTIME_MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    expected.add(RUNTIME_MANIFEST)
     checksum_file = output / "SHA256SUMS"
     checksum_file.write_text(
         "".join(f"{sha256(output / name)}  {name}\n" for name in sorted(expected)),
