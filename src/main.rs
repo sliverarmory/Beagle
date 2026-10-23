@@ -1,3 +1,5 @@
+mod helper_stdio;
+
 use anyhow::{Context, Result, bail};
 use beagle::{
     Beagle, ExportKind, GraphSnapshot, ImportMode, IngestOptions, PathOptions, PathSelection,
@@ -114,6 +116,8 @@ enum Command {
     },
     /// Process JSON lines with op=query/validate/export/stats; one JSON reply per line.
     ServeStdio,
+    /// Run the bounded, persistent desktop-helper protocol over private stdio.
+    HelperStdio,
 }
 fn main() {
     if let Err(error) = run() {
@@ -129,6 +133,9 @@ fn print(value: &Value) -> Result<()> {
 }
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    if matches!(cli.command, Command::HelperStdio) {
+        return helper_stdio::run_stdio();
+    }
     if let Command::Queries { name } = &cli.command {
         return print(&match name {
             Some(name) => Beagle::saved_query(name)?,
@@ -184,7 +191,7 @@ fn run() -> Result<()> {
                 )?
             }
         }
-        Command::Queries { .. } => unreachable!(),
+        Command::Queries { .. } | Command::HelperStdio => unreachable!(),
         Command::Validate { cypher } => beagle.validate(&cypher)?,
         Command::Export { raw } => serde_json::to_value(beagle.export(if raw {
             ExportKind::Raw

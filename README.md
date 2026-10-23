@@ -47,6 +47,13 @@ Maintainers can reproduce the tracked public inputs with
 upstream checksums and preserves any differing local files. Changes to upstream
 pins and generated inputs must be reviewed together with `vendor/build-inputs.json`.
 
+## Desktop integration
+
+`beagle helper-stdio` provides a bounded, versioned JSON-lines protocol with one
+persistent database connection. See the [desktop helper protocol](docs/helper-stdio.md)
+for framing, commands, limits, errors, and host responsibilities. The original
+`serve-stdio` protocol and ordinary CLI commands remain available.
+
 ## Checks and releases
 
 [Build checks](.github/workflows/build.yml) run on pushes and pull requests for

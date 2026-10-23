@@ -13,6 +13,10 @@
 !/THIRD_PARTY_NOTICES.md
 !/README.md
 
+!/docs/
+/docs/*
+!/docs/helper-stdio.md
+
 !/data/
 /data/*
 !/data/queries.json
@@ -59,6 +63,7 @@ ROADMAP.md
 !/tests/analysis.rs
 !/tests/asset_groups.rs
 !/tests/cli.rs
+!/tests/helper_stdio.rs
 !/tests/composition.rs
 !/tests/composition_ntlm.rs
 !/tests/ingest.rs
