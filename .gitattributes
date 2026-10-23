@@ -1,0 +1,4 @@
+# Checksum-pinned public inputs must retain identical bytes on every platform.
+* text=auto eol=lf
+*.tar.gz binary
+*.png binary

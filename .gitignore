@@ -1,13 +1,28 @@
-# Track Beagle's Rust project, CI build support, logo, and license notices.
-# Data, compatibility validation tooling, vendored code, and outputs stay local.
+# Track Beagle and its pinned public build inputs.
+# Private data, compatibility validation tooling, and outputs stay local.
 /*
 !/.gitignore
+!/.gitattributes
 !/Cargo.toml
 !/Cargo.lock
 !/build.rs
+!/build-support/
+/build-support/*
+!/build-support/*.rs
 !/LICENSE
 !/THIRD_PARTY_NOTICES.md
 !/README.md
+
+!/data/
+/data/*
+!/data/queries.json
+!/data/ad-attack-paths.json
+
+!/vendor/
+/vendor/*
+!/vendor/graphqlite-source.tar.gz
+!/vendor/graphqlite-source.json
+!/vendor/build-inputs.json
 
 !/.github/
 /.github/*
@@ -29,6 +44,10 @@ ROADMAP.md
 !/licenses/
 /licenses/*
 !/licenses/dawgs-MIT.txt
+!/licenses/BloodHound-Query-Library-MIT.txt
+!/licenses/GraphQLite-MIT.txt
+!/licenses/PCRE2-LICENSE.txt
+!/licenses/SQLite-public-domain.txt
 
 !/src/
 /src/**
@@ -45,6 +64,8 @@ ROADMAP.md
 !/tests/ingest.rs
 !/tests/library.rs
 !/tests/store.rs
+!/tests/backend_build.rs
+!/tests/windows_build.rs
 !/tests/library-consumer/
 /tests/library-consumer/*
 !/tests/library-consumer/Cargo.toml

@@ -11,10 +11,13 @@
   `data/queries.json` preserves the source query metadata, acknowledgements and resources.
   The license is reproduced in licenses/BloodHound-Query-Library-MIT.txt.
   Source: https://github.com/SpecterOps/BloodHoundQueryLibrary
-- GraphQLite and its PCRE2 support are statically linked into Beagle. The build preparation step
-  recreates `vendor/graphqlite-source.tar.gz` from checksum-verified public source, pinned to commit
+- GraphQLite and its PCRE2 support are statically linked into Beagle. The tracked
+  `vendor/graphqlite-source.tar.gz` is reproduced by the maintainer refresh script
+  from checksum-verified public source, pinned to commit
   `fce218994355ebd1162b54ed634791864f1bb81d`. The archive includes GraphQLite's LICENSE
-  and bundled PCRE2/SQLite licenses. Per-file hashes are in `vendor/graphqlite-source.json`.
+  and bundled PCRE2/SQLite licenses. Cargo verifies the archive and its per-file hashes
+  in `vendor/graphqlite-source.json` before compiling it. Public-input source provenance
+  and generated-file hashes are recorded in `vendor/build-inputs.json`.
   Source: https://github.com/moloch--/graphqlite
 - Windows x64 builds also statically link MSYS2's POSIX regex libraries:
   libsystre 1.0.2 (copyright 2015 LRN) and TRE 0.9.0 (copyright 2001-2009

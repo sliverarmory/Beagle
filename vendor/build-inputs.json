@@ -1,0 +1,29 @@
+{
+  "sources": {
+    "graphqlite": {
+      "url": "https://codeload.github.com/moloch--/graphqlite/tar.gz/fce218994355ebd1162b54ed634791864f1bb81d",
+      "commit": "fce218994355ebd1162b54ed634791864f1bb81d",
+      "sha256": "3359a0e3e673a4d37b2ff71778fc3e426b68eee377d1cb1bd5f426601484fdf8"
+    },
+    "query_library": {
+      "url": "https://codeload.github.com/SpecterOps/BloodHoundQueryLibrary/tar.gz/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93",
+      "commit": "b1fee8f5715f8fb3358e187ca3f1bddbfd125f93",
+      "sha256": "0dd37707af08c16c39196a6f6893708cef583e5047b24c74c835645f553702f1"
+    },
+    "ad_schema": {
+      "url": "https://raw.githubusercontent.com/SpecterOps/BloodHound/1759e1638435595def27eb3ff3c5a6fc32832ddc/packages/go/graphschema/ad/ad.go",
+      "commit": "1759e1638435595def27eb3ff3c5a6fc32832ddc",
+      "sha256": "8b7dc8bf88eb19a5dfb2043e199f823e0434cffa47a978e608568b348ce3b51a"
+    }
+  },
+  "files": {
+    "data/queries.json": "878494e95e4f9474f67a3263f14bd953eca904e8b0ebf7c3040955393214b725",
+    "data/ad-attack-paths.json": "a686c67cb0e26873c0231d6a6b2f498cae7258cedd80a61f4f48d0ed2a9362be",
+    "vendor/graphqlite-source.tar.gz": "c32942e82cf390ede246be768172230f12557fbf0d5dc3cdb572b1871c00aa07",
+    "vendor/graphqlite-source.json": "4a2feba354fb1af95b8dc02668ceb1474751212dcf5e7c2e45385411f21f1f13",
+    "licenses/BloodHound-Query-Library-MIT.txt": "1ab4751a526fae223b1402e2c68a8610069f967ce3e27222eafea2a6647a0434",
+    "licenses/GraphQLite-MIT.txt": "cc5d99097934129f7a06cc2cdd8092843a5d27aed63b82d917e06f51a7a6634d",
+    "licenses/PCRE2-LICENSE.txt": "197d8a73ffee0d6b09adba2f9c677b5f5aede24edf89258a68e48248d010d811",
+    "licenses/SQLite-public-domain.txt": "7b8578a074f9ddd01b7554b58b4db2793943a1f8cba2caa29f87a636868ec755"
+  }
+}

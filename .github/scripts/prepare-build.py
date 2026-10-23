@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Reproduce ignored build inputs from checksum-pinned public upstream sources.
+"""Maintainer-only refresh of tracked, checksum-pinned public build inputs.
 
 Only public query definitions and native library sources are downloaded. Existing
 local inputs are preserved; any difference must be resolved explicitly instead of
-silently replacing a maintainer's local files.
+silently replacing a maintainer's local files. Normal Cargo builds consume the
+tracked inputs directly and do not need this script, Python, or PyYAML.
 """
 import argparse
 import gzip
@@ -164,7 +165,7 @@ def prepare(root):
         if digest(outputs[name]) != expected:
             raise RuntimeError("generated input checksum mismatch: " + name)
     metadata = {"sources": SOURCES, "files": {name: digest(data) for name, data in outputs.items()}}
-    outputs["build/ci-inputs.json"] = json_bytes(metadata)
+    outputs["vendor/build-inputs.json"] = json_bytes(metadata)
     # Check the entire output set before writing any files. Never overwrite local
     # data, source modifications, or a symlink supplied by a maintainer.
     for name, data in outputs.items():

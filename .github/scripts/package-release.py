@@ -43,6 +43,30 @@ def command(*arguments):
     return subprocess.check_output(arguments, cwd=ROOT, text=True).strip()
 
 
+def build_inputs():
+    """Verify the tracked public inputs before recording release provenance."""
+    inputs = json.loads((ROOT / "vendor/build-inputs.json").read_text(encoding="utf-8"))
+    for relative, expected in inputs["files"].items():
+        if sha256(ROOT / relative) != expected:
+            raise ValueError(f"tracked public build input checksum mismatch: {relative}")
+    return inputs
+
+
+def native_build_metadata():
+    """Select this build's OUT_DIR from Cargo output, never a stale glob match."""
+    package_id = command("cargo", "pkgid", "--locked")
+    messages = ROOT / "build/release-cargo.json"
+    out_dirs = set()
+    for line in messages.read_text(encoding="utf-8").splitlines():
+        message = json.loads(line)
+        if message.get("reason") == "build-script-executed" and message.get("package_id") == package_id:
+            out_dirs.add(message["out_dir"])
+    if len(out_dirs) != 1:
+        raise ValueError("release Cargo output must identify exactly one Beagle native build")
+    metadata_path = Path(out_dirs.pop()) / "graphqlite-build.json"
+    return json.loads(metadata_path.read_text(encoding="utf-8"))
+
+
 def release_version(tag):
     manifest = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
     version = manifest["package"]["version"]
@@ -100,32 +124,28 @@ adjacent windows-posix.json records source and binary package checksums.
 Beagle source: tag v{version}, commit {commit} in the same repository as
 this GitHub release. Download the release's Source code archive or check
 out that exact tag. It includes Cargo.lock, Rust source, the native build
-integration, and the checksum-pinned public-input bootstrap.
+integration, public query catalogs, and checksum-pinned GraphQLite sources.
 
 To rebuild Beagle against these libraries or your modified versions:
 
-1. Install Rust stable with the x86_64-pc-windows-gnu target, Python 3.13,
-   and an MSYS2 MINGW64 toolchain (gcc, make, bison, flex, tar, and zstd).
-   Install Python build helpers: PyYAML==6.0.3 and angreal==2.9.2.
+1. Install Rust stable with the x86_64-pc-windows-gnu target and an MSYS2
+   MINGW64 toolchain (gcc, bison, and flex). To rebuild the dependency
+   packages themselves, also install MSYS2's base-devel, tar, and zstd.
 2. Extract the desired .src.tar.zst package in MSYS2. Its PKGBUILD and
    source archives are the inputs to makepkg-mingw. Apply your changes,
    then use MINGW_ARCH=mingw64 makepkg-mingw --syncdeps --cleanbuild in
    that package directory. Extract the resulting packages into a chosen
    prefix, preserving their mingw64/include and mingw64/lib layout.
-3. In the Beagle source directory, run:
-       python .github/scripts/prepare-build.py
-   This restores public GraphQLite sources and query definitions. Set
-   BEAGLE_PYTHON to your Python executable and BEAGLE_ANGREAL to angreal.
-4. Set BEAGLE_WINDOWS_POSIX_ROOT to the absolute path of the rebuilt
+3. Set BEAGLE_WINDOWS_POSIX_ROOT to the absolute path of the rebuilt
    mingw64 prefix, then run:
        cargo build --locked --release --target x86_64-pc-windows-gnu
    The prefix must contain regex.h and static libsystre.a, libtre.a,
    libintl.a, and libiconv.a. Ensure the MSYS2 compiler and build tools
    are on PATH. The executable is target/x86_64-pc-windows-gnu/release/beagle.exe.
 
-The normal prepare_windows_posix.py helper verifies the original binary
-packages. Skip that helper when linking your modified libraries: the
-BEAGLE_WINDOWS_POSIX_ROOT override selects your own prefix directly.
+Cargo normally downloads and verifies the original binary packages.
+The BEAGLE_WINDOWS_POSIX_ROOT override selects your own prefix directly.
+Beagle compilation does not require Python, PyYAML, angreal, or Make.
 The source package license texts describe each component's terms.
 """
         (staging / "REBUILD.md").write_text(instructions, encoding="utf-8")
@@ -140,7 +160,8 @@ def package(version, tag, target):
     executable = executable.resolve()
     if command(str(executable), "--version") != f"beagle {version}":
         raise ValueError("built executable version does not match the release tag")
-    inputs = json.loads((ROOT / "build/ci-inputs.json").read_text(encoding="utf-8"))
+    inputs = build_inputs()
+    native = native_build_metadata()
     provenance = {
         "schema_version": 1,
         "project": "beagle",
@@ -152,6 +173,7 @@ def package(version, tag, target):
         "cargo_lock_sha256": sha256(ROOT / "Cargo.lock"),
         "binary": {"name": executable_name, "sha256": sha256(executable)},
         "build_inputs": inputs,
+        "native_build": native,
     }
     if os.environ.get("GITHUB_RUN_ID"):
         repository = os.environ["GITHUB_REPOSITORY"]
@@ -177,7 +199,7 @@ def package(version, tag, target):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative, destination)
         if target.endswith("windows-gnu"):
-            prefix = Path(os.environ["BEAGLE_WINDOWS_POSIX_ROOT"])
+            prefix = Path(native["windows_posix_prefix"])
             for name in WINDOWS_LICENSE_DIRS:
                 source = prefix / "share/licenses" / name
                 if not source.is_dir():

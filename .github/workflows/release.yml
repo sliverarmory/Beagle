@@ -91,9 +91,24 @@ jobs:
           cargo run --locked --release --manifest-path "$GITHUB_WORKSPACE/tests/library-consumer/Cargo.toml"
 
       - name: Build release executable
-        run: cargo build --locked --release --bin beagle
+        run: |
+          mkdir -p build
+          cargo build --locked --release --bin beagle --message-format=json > build/release-cargo.json
 
-      - name: Restore Windows dependency source packages
+      - name: Install Python for release packaging
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: Install Windows release packaging tools
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          install: tar zstd
+
+      - name: Download verified Windows dependency source packages
         if: runner.os == 'Windows'
         run: python .github/build/prepare_windows_posix.py --sources-only --output build/windows-sources
 
