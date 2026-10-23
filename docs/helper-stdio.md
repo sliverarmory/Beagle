@@ -15,7 +15,7 @@ its own deadlines and kill/restart a helper that hangs or fails framing.
 The first message is:
 
 ```json
-{"type":"ready","protocol":1,"name":"beagle","version":"0.1.0","operations":["open","stats","query","savedQuery","catalog","savedQueryInfo","entity","ingest","analyze","tag","compose","export","paths","shutdown","importSnapshot","exportToFile","backup","cleanup","getAssetGroups","previewAssetGroups","applyAssetGroups","relayTargets","closeDatabase","setImportHistoryRetention"],"limits":{"requestBytes":1048576,"responseBytes":33554432}}
+{"type":"ready","protocol":1,"name":"beagle","version":"0.1.1","operations":["open","stats","query","savedQuery","catalog","savedQueryInfo","entity","ingest","analyze","tag","compose","export","paths","shutdown","importSnapshot","exportToFile","backup","cleanup","getAssetGroups","previewAssetGroups","applyAssetGroups","relayTargets","closeDatabase","setImportHistoryRetention"],"limits":{"requestBytes":1048576,"responseBytes":33554432}}
 ```
 
 `version` comes from the built crate version. Both limits include the trailing

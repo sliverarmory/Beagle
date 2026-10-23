@@ -106,11 +106,7 @@ jobs:
 
       - name: Install Windows release packaging tools
         if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
-        with:
-          msystem: MINGW64
-          path-type: inherit
-          install: tar zstd
+        run: pacman --sync --needed --noconfirm tar zstd
 
       - name: Download verified Windows dependency source packages
         if: runner.os == 'Windows'
